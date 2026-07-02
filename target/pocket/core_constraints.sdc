@@ -11,9 +11,7 @@ set_clock_groups -asynchronous \
  -group { ic|mp1|mf_pllbase*_inst|altera_pll_i|*[0].*|divclk \
           ic|mp1|mf_pllbase*_inst|altera_pll_i|*[1].*|divclk } \
  -group { ic|mp1|mf_pllbase*_inst|altera_pll_i|*[2].*|divclk } \
- -group { ic|mp1|mf_pllbase*_inst|altera_pll_i|*[3].*|divclk } \
- -group { ic|audio_mixer|audio_pll|mf_audio_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk \
-          ic|audio_mixer|audio_pll|mf_audio_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk }
+ -group { ic|mp1|mf_pllbase*_inst|altera_pll_i|*[3].*|divclk }
 
 derive_clock_uncertainty
 
