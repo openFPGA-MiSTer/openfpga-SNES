@@ -95,6 +95,25 @@ module MAIN_SNES (
 
     output reg [3:0] sram_size,
 
+    // Save states (control on clk_sys, streams on clk_mem)
+    input wire ss_save,
+    input wire ss_load,
+    input wire ss_abort,
+    input wire ss_force_nmi,
+    input wire ss_pause,
+    input wire ss_ctrl_idle,
+    output wire ss_busy,
+    output wire ss_avail,
+    output wire ss_stage_lost,
+
+    input wire ss_stage_wr,
+    input wire [19:0] ss_stage_addr,
+    input wire [15:0] ss_stage_data,
+
+    input wire ss_blob_rd,
+    input wire [19:0] ss_blob_addr,
+    output wire [15:0] ss_blob_q,
+
     // SDRAM
     output wire [12:0] dram_a,
     output wire [ 1:0] dram_ba,
@@ -154,7 +173,9 @@ module MAIN_SNES (
   parameter USE_DSPn = 1'b0;
   parameter USE_SPC7110 = 1'b0;
   parameter USE_BSX = 1'b0;
+  parameter USE_SUFAMI = 1'b0;
   parameter USE_MSU = 1'b0;
+  parameter USE_SS = 1'b0;
 
   initial begin
     $info("Selected chips");
@@ -165,7 +186,9 @@ module MAIN_SNES (
     $info("DSPn %d", USE_DSPn);
     $info("SPC7110 %d", USE_SPC7110);
     $info("BSX %d", USE_BSX);
+    $info("SUFAMI %d", USE_SUFAMI);
     $info("MSU %d", USE_MSU);
+    $info("SS %d", USE_SS);
   end
 
   // Hardcoded wires
@@ -321,7 +344,9 @@ module MAIN_SNES (
       .USE_DSPn(USE_DSPn),
       .USE_SPC7110(USE_SPC7110),
       .USE_BSX(USE_BSX),
-      .USE_MSU(USE_MSU)
+      .USE_SUFAMI(USE_SUFAMI),
+      .USE_MSU(USE_MSU),
+      .USE_SS(USE_SS)
   ) main (
       .RESET_N(RESET_N),
 
@@ -330,10 +355,14 @@ module MAIN_SNES (
 
       // .GSU_ACTIVE(GSU_ACTIVE),
       .GSU_TURBO(gsu_turbo_enabled),
+      .GSU_FASTROM(1'b1),
+      .SUFAMI_SWAP(1'b0),
+      .CC_DIP(8'b0001_0000),
 
       .ROM_TYPE(rom_type),
       .ROM_MASK(rom_mask),
       .RAM_MASK(ram_mask),
+      .RAM_SIZE(ram_size),
       .PAL(PAL),
       .BLEND(blend_enabled),
 
@@ -437,10 +466,149 @@ module MAIN_SNES (
       // .MSU_DATA_SEEK(msu_data_seek),
       // .MSU_DATA_REQ(msu_data_req),
       .MSU_ENABLE(0),  // TODO
+      .MSU_AUDIO_SECTOR(22'd0),
+
+      .DSP_FREQ(1'b0),
+
+      // Save states
+      .SS_SAVE(ss_save),
+      .SS_TOSD(1'b1),
+      .SS_LOAD(ss_load),
+      .SS_ABORT(ss_abort),
+      .SS_NMI_FORCE(ss_force_nmi),
+      .SS_SLOT(2'd0),
+      .SS_AVAIL(ss_avail),
+      .SS_DDR_DI(ss_ddr_di),
+      .SS_DDR_ACK(ss_ddr_ack),
+      .SS_DDR_DO(ss_ddr_do),
+      .SS_DDR_ADDR(ss_ddr_addr),
+      .SS_DDR_BE(ss_ddr_be),
+      .SS_DDR_WE(ss_ddr_we),
+      .SS_DDR_REQ(ss_ddr_req),
+      .PAUSE(ss_pause_cpu),
+      .SS_BUSY_OUT(ss_busy),
 
       .AUDIO_L(audio_l),
       .AUDIO_R(audio_r)
   );
+
+  wire [63:0] ss_ddr_di;
+  wire ss_ddr_ack;
+  wire [63:0] ss_ddr_do;
+  wire [21:3] ss_ddr_addr;
+  wire [7:0] ss_ddr_be;
+  wire ss_ddr_we;
+  wire ss_ddr_req;
+
+  wire ss_mem_active;
+  wire [24:0] ss_sd_addr;
+  wire [15:0] ss_sd_din;
+  wire ss_sd_rd;
+  wire ss_sd_wr;
+  wire ss_sd_rfsh;
+
+  // The console must not resume until the SDRAM port handback and the
+  // re-read of the CPU's pending ROM address have completed; only the CPU
+  // side is stretched, save_state_mem keeps the raw ss_pause so the
+  // handback proceeds during the stretch
+  wire ss_pause_cpu;
+
+  pause_stretch pause_stretch (
+      .clk_sys(clk_sys),
+      .pause_in(ss_pause),
+      .pause_out(ss_pause_cpu)
+  );
+
+  generate
+    if (USE_SS == 1'b1) begin : ss_transport
+      wire ss_pause_mem;
+
+      save_state_mem ss_mem (
+          .clk_sys(clk_sys),
+          .clk_mem(clk_mem_85_9),
+
+          .ss_ddr_do(ss_ddr_do),
+          .ss_ddr_addr(ss_ddr_addr),
+          .ss_ddr_be(ss_ddr_be),
+          .ss_ddr_we(ss_ddr_we),
+          .ss_ddr_req(ss_ddr_req),
+          .ss_ddr_di(ss_ddr_di),
+          .ss_ddr_ack(ss_ddr_ack),
+
+          .ss_busy (ss_busy),
+          .ss_pause(ss_pause),
+          .ss_pause_mem(ss_pause_mem),
+
+          .blocked(cart_download),
+          .ctrl_idle(ss_ctrl_idle),
+          .stage_lost(ss_stage_lost),
+
+          .stage_wr(ss_stage_wr),
+          .stage_addr(ss_stage_addr),
+          .stage_data(ss_stage_data),
+
+          .blob_rd(ss_blob_rd),
+          .blob_addr(ss_blob_addr),
+          .blob_q(ss_blob_q),
+
+          .ss_mem_active(ss_mem_active),
+          .sd_addr(ss_sd_addr),
+          .sd_din(ss_sd_din),
+          .sd_rd(ss_sd_rd),
+          .sd_wr(ss_sd_wr),
+          .sd_rfsh(ss_sd_rfsh),
+          .sd_dout(sdram_dout),
+          .sd_busy(sdram_busy)
+      );
+
+      // Helper program overlay: while the engine walk runs, all CPU ROM
+      // fetches are redirected into bank $FF and served from BRAM
+      wire [15:0] boot1_q;
+
+      boot1_rom boot1 (
+          .clk (clk_sys),
+          .addr(ROM_ADDR[11:0]),
+          .word(ROM_WORD),
+          .q(boot1_q)
+      );
+
+      assign boot1_sel = ss_busy & (ROM_ADDR[23:16] == 8'hFF) & ~cart_download;
+
+      // While the console is frozen the transport owns the SDRAM port and
+      // blob traffic drives sdram_dout, but a bus master frozen between
+      // fetch and consume (the SA-1 fetches on every one of its clock
+      // enables) still has to find its own word on ROM_Q when it resumes.
+      // Hold the last pre-pause word until the first console owned access
+      // after the pause completes; the CPU side pause is stretched past the
+      // raw ss_pause, so no console access can slip in before the hold is
+      // armed or while it is released.
+      reg [15:0] rom_q_hold = 0;
+      reg hold_rom_q = 0;
+      reg sdram_busy_d = 0;
+
+      always @(posedge clk_mem_85_9) begin
+        sdram_busy_d <= sdram_busy;
+        if (ss_pause_mem) hold_rom_q <= 1;
+        else if (~ss_mem_active && sdram_busy_d && ~sdram_busy) hold_rom_q <= 0;
+        if (~hold_rom_q) rom_q_hold <= sdram_dout;
+      end
+
+      assign ROM_Q = boot1_sel ? boot1_q : hold_rom_q ? rom_q_hold : sdram_dout;
+    end else begin : ss_transport_off
+      assign ss_ddr_di = 64'd0;
+      assign ss_ddr_ack = 1'b0;
+      assign ss_mem_active = 1'b0;
+      assign ss_sd_addr = 25'd0;
+      assign ss_sd_din = 16'd0;
+      assign ss_sd_rd = 1'b0;
+      assign ss_sd_wr = 1'b0;
+      assign ss_sd_rfsh = 1'b0;
+      assign ss_blob_q = 16'd0;
+      assign ss_stage_lost = 1'b0;
+      assign boot1_sel = 1'b0;
+      assign ROM_Q = sdram_dout;
+    end
+  endgenerate
 
   wire reset = core_reset | cart_download | spc_download | bk_loading | clearing_ram | msu_data_download | parser_delay != 0;
 
@@ -507,18 +675,28 @@ module MAIN_SNES (
   wire ROM_WORD;
   wire [15:0] ROM_D;
   wire [15:0] ROM_Q;
+  wire [15:0] sdram_dout;
+  wire sdram_busy;
+  wire boot1_sel;
 
+  // While a save state transfer is staging (console frozen) or the transport
+  // performs one operation of an engine walk, the SDRAM port belongs to the
+  // transport. Between walk operations the console keeps the port, because on
+  // SA-1 carts the coprocessor still fetches real ROM until the helper
+  // program parks it.
   sdram sdram (
       .init(0),  //~clock_locked),
       .clk(clk_mem),
 
-      .addr(cart_download ? ioctl_addr : ROM_ADDR),
-      .din (cart_download ? ioctl_dout : ROM_D),
-      .dout(ROM_Q),
-      .rd  (~cart_download & (RESET_N ? ~ROM_OE_N : RFSH)),
-      .wr  (cart_download ? ioctl_wr : ~ROM_WE_N),
-      .word(cart_download | ROM_WORD),
-      .busy(),
+      .addr(cart_download ? ioctl_addr : ss_mem_active ? ss_sd_addr : ROM_ADDR),
+      .din (cart_download ? ioctl_dout : ss_mem_active ? ss_sd_din : ROM_D),
+      .dout(sdram_dout),
+      .rd  (~cart_download & (ss_mem_active ? ss_sd_rd : (RESET_N ? ~ROM_OE_N : RFSH))),
+      .wr  (cart_download ? ioctl_wr : (ss_mem_active ? ss_sd_wr : ~ROM_WE_N)),
+      .word(cart_download | ss_mem_active | ROM_WORD),
+      // ss_sd_rfsh is only ever asserted while the arbiter owns the port
+      .rfsh(ss_sd_rfsh & ~cart_download),
+      .busy(sdram_busy),
 
       // Actual SDRAM interface
       .SDRAM_DQ(dram_dq),

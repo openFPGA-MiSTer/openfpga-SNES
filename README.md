@@ -4,13 +4,9 @@ Ported from the original core developed by [srg320](https://github.com/srg320) (
 
 Please report any issues encountered to this repo. Most likely any problems are a result of my port, not the original core. Issues will be upstreamed as necessary.
 
-> [!WARNING]
-> 
-> Savestates/Memories/Sleep not supported
+> [!NOTE]
 >
-> Savestates/Memories/Sleep are not supported by any FPGA SNES core. Not this one, not the MiSTer core it's ported from, not the Analogue Super NT one.
-> 
-> **Support for savestates will _not_ be coming** to any of these cores. Do not ask. If you would like to learn more, see [issue #59](https://github.com/agg23/openfpga-SNES/issues/59) and [this discussion on the MiSTer forums](https://misterfpga.org/viewtopic.php?t=4944).
+> Save states (Memories) and Sleep are supported for regular carts and for DSP, Super FX (GSU) and SA-1 games, using the save state system from the upstream MiSTer core. Sleep rides on the same save state support. CX4, S-DD1, SPC7110 and BSX games do not support save states. See the Savestates/Memories/Sleep section below.
 
 ## Installation
 
@@ -52,11 +48,16 @@ BSX ROMs must be patched to run without BIOS. The BSX BIOS is not currently supp
 
 ### Savestates/Memories/Sleep
 
-> **Warning**: Not supported
+Save states use the save state system developed for the upstream MiSTer core: a small helper program (`boot1.rom`, built from [`src/savestates.asm`](https://github.com/MiSTer-devel/SNES_MiSTer/blob/master/src/savestates.asm) upstream) runs on the emulated 65C816 itself to capture or restore the machine state. The state blob is staged in cart SDRAM and moved through the Pocket's Memories interface.
 
-Savestates/Memories/Sleep are not supported by any FPGA SNES core. Not this one, not the MiSTer core it's ported from, not the Analogue Super NT one.
+Supported: regular LoROM/HiROM/ExHiROM carts, DSP-1/2/3/4, Super FX/GSU and SA-1 games.
 
-**Support for savestates will _not_ be coming** to any of these cores. Do not ask. If you would like to learn more, see [issue #59](https://github.com/agg23/openfpga-SNES/issues/59) and [this discussion on the MiSTer forums](https://misterfpga.org/viewtopic.php?t=4944).
+Not supported: CX4, S-DD1, SPC7110 and BSX games (they lack save state support upstream). CX4 games share a bitstream with SA-1, so the OS offers Memories on them, but attempting to save fails gracefully; the SPC/S-DD1 bitstream is built without the save state logic entirely.
+
+Notes:
+* A save is captured on the next NMI/IRQ, so it can take a frame or two to start
+* Cart save RAM (BSRAM) is included in the state, so loading a state also rewinds the in-game save file to that moment
+* Sleep works on save state capable games; on unsupported games it fails gracefully and the game keeps running. The `sleep_supported` flag in `core.json` applies to the whole core family, but the SPC/S-DD1 bitstream is built without the save state logic and reports `savestate_supported = 0` at runtime, so the OS cannot create a Memory on it. On the SA-1/CX4 bitstream only SA-1 games are save state capable; CX4 games fail gracefully
 
 ### Video
 

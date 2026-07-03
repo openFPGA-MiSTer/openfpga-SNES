@@ -165,11 +165,29 @@ core r8 // Boot SPC7110/SDD1/BSX core
 jp send_chip
 
 check_pal:
+ld r5,#3 // NTSC SA1/CX4 core
 cmp r3,#1 // Check if PAL
-jp nz, send_chip
-// It's PAL
+jp nz, bit_sa1
+log_string("Using PAL")
 ld r8,#2
 core r8
+ld r5,#4 // PAL SA1/CX4 core
+
+// The main cores traded SA1/CX4 for save state support, so those chips
+// live in their own cores
+bit_sa1:
+cmp r4,#0x60 // Check if SA-1
+jp nz, bit_cx4
+log_string("Using SA1")
+jp sa1cx4_core
+
+bit_cx4:
+cmp r4,#0x40 // Check if CX4
+jp nz, send_chip
+log_string("Using CX4")
+
+sa1cx4_core:
+core r5 // Boot SA1/CX4 core
 
 send_chip:
 log_string("Sending chip type")
