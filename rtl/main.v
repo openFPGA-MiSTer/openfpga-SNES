@@ -136,6 +136,8 @@ module main #(
 	input             SS_SAVE,
 	input             SS_TOSD,
 	input             SS_LOAD,
+	input             SS_ABORT,
+	input             SS_NMI_FORCE,
 	input       [1:0] SS_SLOT,
 	output            SS_AVAIL,
 
@@ -146,6 +148,11 @@ module main #(
 	output            SS_DDR_WE,
 	output      [7:0] SS_DDR_BE,
 	output            SS_DDR_REQ,
+
+	// Pocket additions: console freeze for save state transfers and the
+	// engine walk status for the transfer controller
+	input             PAUSE,
+	output            SS_BUSY_OUT,
 
 	output     [15:0] AUDIO_L,
 	output     [15:0] AUDIO_R
@@ -182,7 +189,7 @@ SNES SNES
 	.dspclk(ACLK),
 
 	.rst_n(RESET_N),
-	.enable(1),
+	.enable(~PAUSE),
 
 	.ca(CA),
 	.cpurd_n(CPURD_N),
@@ -271,6 +278,9 @@ SNES SNES
 	.ss_di(SS_DO),
 	.ss_spc_do(SS_SPC_DI),
 	.ss_ppu_do(SS_PPU_DI),
+	// Armed gate keeps a late force pulse from delivering a real NMI to
+	// the game (e.g. after the engine dropped the request on a bad header)
+	.ss_nmi_force(SS_NMI_FORCE & SS_ARMED),
 
 	.DBG_BG_EN(DBG_BG_EN),
 	.DBG_CPU_EN(DBG_CPU_EN),
@@ -355,6 +365,7 @@ DSP_LHRomMap #(.USE_DSPn(USE_DSPn)) DSP_LHRomMap
 (
 	.mclk(MCLK),
 	.rst_n(RESET_N),
+	.enable(~PAUSE),
 
 	.ca(CA),
 	.di(DO),
@@ -559,6 +570,7 @@ GSUMap GSUMap
 (
 	.mclk(MCLK),
 	.rst_n(RESET_N),
+	.enable(1'b1),
 
 	.ca(CA),
 	.di(DO),
@@ -600,7 +612,12 @@ GSUMap GSUMap
 	.turbo(GSU_TURBO),
 	.fastrom(GSU_FASTROM),
 
-	.ss_busy(SS_BUSY),
+	// The GSU is a live memory bus master, so the console freeze must also
+	// stop it or its fetches race the borrowed memory port while the state
+	// blob moves. ENABLE is static configuration and stops the GSU with no
+	// settle window, which tears an in-flight ROM/RAM access; the ss_busy
+	// clock freeze quiesces and resumes it cleanly.
+	.ss_busy(SS_BUSY | PAUSE),
 	.ss_wr(SS_BUSY & SS_GSU_SEL & ~CPUWR_N),
 	.ss_do(SS_GSU_DI)
 );
@@ -637,6 +654,14 @@ SA1Map SA1Map
 (
 	.mclk(MCLK),
 	.rst_n(RESET_N),
+	.enable(1'b1),
+	// The SA-1 is a live memory bus master whose clock enable free-runs on
+	// MCLK, so the console freeze must also stop it or its fetches race the
+	// borrowed memory port while the state blob moves. ENABLE is static
+	// configuration (it switches the BWRAM/IRAM interfaces to pass-through)
+	// and would tear an in-flight access; the dedicated pause parks the SA-1
+	// clock enable and resumes it cleanly.
+	.pause(PAUSE),
 
 	.ca(CA),
 	.di(DO),
@@ -898,6 +923,7 @@ wire        SS_ARAM_SEL, SS_DSP_REGS_SEL, SS_SMP_SEL;
 wire        SS_BSRAM_SEL;
 wire        SS_DSPN_REGS_SEL, SS_DSPN_RAM_SEL;
 wire        SS_GSU_SEL;
+wire        SS_ARMED;
 
 
 generate
@@ -910,6 +936,7 @@ savestates ss
 	.save(SS_SAVE),
 	.save_sd(SS_TOSD),
 	.load(SS_LOAD),
+	.abort(SS_ABORT),
 	.slot(SS_SLOT),
 
 	.ram_size(RAM_SIZE),
@@ -971,7 +998,8 @@ savestates ss
 
 	.ss_do_ovr(SS_DO_OVR),
 	.ss_rom_ovr(SS_ROM_OVR),
-	.ss_busy(SS_BUSY)
+	.ss_busy(SS_BUSY),
+	.ss_armed(SS_ARMED)
 );
 end else begin
 	assign SS_DO = 0;
@@ -992,10 +1020,13 @@ end else begin
 	assign SS_DO_OVR = 0;
 	assign SS_ROM_OVR = 0;
 	assign SS_BUSY = 0;
+	assign SS_ARMED = 0;
 end
 endgenerate
 
 assign SS_AVAIL = ~|{ROM_TYPE[7:4]} | MAP_ACTIVE[3] | (ROM_TYPE[7:6] == 2'b10) | MAP_ACTIVE[2]; // Basic carts + SA1 + DSPn + GSU
+
+assign SS_BUSY_OUT = SS_BUSY;
 
 assign TURBO_ALLOW = ~(MAP_ACTIVE[3] | MAP_ACTIVE[1] | SS_BUSY);
 

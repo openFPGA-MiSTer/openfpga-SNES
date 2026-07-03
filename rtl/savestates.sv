@@ -6,6 +6,7 @@ module savestates
 	input             save,
 	input             save_sd,
 	input             load,
+	input             abort,
 	input       [1:0] slot,
 
 	input       [3:0] ram_size,
@@ -69,7 +70,8 @@ module savestates
 
 	output            ss_do_ovr,
 	output            ss_rom_ovr,
-	output reg        ss_busy
+	output reg        ss_busy,
+	output            ss_armed
 );
 
 reg cpurd_n_old, cpuwr_n_old;
@@ -228,6 +230,18 @@ always @(posedge clk) begin
 				load_en <= 0;
 				save_en <= 0;
 				save_end <= 0;
+			end
+		end
+
+		// Platform-side disarm of a request that never found a vector
+		// fetch (quiet or wedged console). Without this the request
+		// stays armed forever and hijacks some far later interrupt. A
+		// hijack starting on this same edge wins: the guard repeats the
+		// trigger condition above.
+		if (abort & ~ss_busy) begin
+			if (~(cpurd_ce & (nmi_vect_l | (~ss_use_nmi & irq_vect_l)) & (save_en | (load_en & load_ready)))) begin
+				save_en <= 0;
+				load_en <= 0;
 			end
 		end
 
@@ -469,6 +483,11 @@ end
 
 assign ss_do_ovr = ss_busy & ss_oe;
 assign ss_rom_ovr = map_active ? map_rom_ovr : ss_busy;
+
+// A request is waiting for a vector fetch to hijack. Qualifies the forced
+// NMI so it can never reach a game's own handler (e.g. after load_en
+// self-clears on a bad header).
+assign ss_armed = save_en | (load_en & load_ready);
 
 assign aram_sel = ss_busy & (pa == 8'h84);
 assign dsp_regs_sel = ss_busy & (pa == 8'h85);

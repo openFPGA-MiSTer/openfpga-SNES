@@ -44,7 +44,10 @@ module sdram
 	input             word,
 	input      [15:0] din,
 	output     [15:0] dout,
-	output reg        busy
+	output reg        busy,
+
+	// explicit auto refresh request, for phases where no CPU accesses run
+	input             rfsh
 );
 
 assign SDRAM_nCS = 0;
@@ -72,16 +75,18 @@ reg [15:0] data;
 reg        we;
 reg        ds;
 reg        ram_req=0;
+reg        ref_cyc=0;
 wire       ram_req_test = (we || (a[24:1] != addr[24:1]));
 reg [15:0] last_data;
 
 // access manager
 always @(posedge clk) begin
 	reg old_ref;
-	reg old_rd,old_wr;
+	reg old_rd,old_wr,old_rf;
 
 	old_rd <= old_rd & rd;
 	old_wr <= old_wr & wr;
+	old_rf <= old_rf & rfsh;
 
 	if(state == STATE_IDLE && mode == MODE_NORMAL) begin
 		if((~old_rd & rd) | (~old_wr & wr)) begin
@@ -92,9 +97,16 @@ always @(posedge clk) begin
 			busy <= 1;
 			state <= STATE_START;
 		end
+		else if(~old_rf & rfsh) begin
+			old_rf <= rfsh;
+			we <= 0;
+			ref_cyc <= 1;
+			busy <= 1;
+			state <= STATE_START;
+		end
 	end
-	
-	if(state == STATE_START && busy) begin
+
+	if(state == STATE_START && busy && !ref_cyc) begin
 		a <= addr;
 		data <= word ? din : {din[7:0],din[7:0]};
 		ram_req <= ram_req_test;
@@ -102,6 +114,7 @@ always @(posedge clk) begin
 
 	if(state == STATE_READY && busy) begin
 		ram_req <= 0;
+		ref_cyc <= 0;
 		we <= 0;
 		busy <= 0;
 		if(ram_req) begin
@@ -163,7 +176,7 @@ always @(posedge clk) begin
 
 	SDRAM_DQ <= 'Z;
 	casex({ram_req,we,mode,state})
-		{2'bXX, MODE_NORMAL, STATE_START}: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= ram_req_test ? CMD_ACTIVE : CMD_AUTO_REFRESH;
+		{2'bXX, MODE_NORMAL, STATE_START}: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= (ram_req_test && !ref_cyc) ? CMD_ACTIVE : CMD_AUTO_REFRESH;
 		{2'b11, MODE_NORMAL, STATE_CONT }: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE, SDRAM_DQ} <= {CMD_WRITE, data};
 		{2'b10, MODE_NORMAL, STATE_CONT }: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
 

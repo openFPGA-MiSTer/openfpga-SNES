@@ -9,7 +9,17 @@ entity SA1 is
 		RST_N			: in std_logic;
 		CLK			: in std_logic;
 		ENABLE		: in std_logic;
-		
+		-- Freezes the chip by parking CLK_CE low; all internal clock
+		-- enables derive from it, so state is preserved. The park engages
+		-- at once, but the release waits for the first SYSCLKF_CE after
+		-- PAUSE falls: that is the point where the resync below forces
+		-- CLK_CE low anyway, so the chip resumes phase-locked to the SNES
+		-- clock grid and the bus arbitration keeps its live timing. ENABLE
+		-- cannot double as a pause: it is static configuration that also
+		-- switches the BWRAM/IRAM interfaces to pass-through, so toggling
+		-- it mid-game tears in-flight accesses.
+		PAUSE			: in std_logic := '0';
+
 		SNES_A   	: in std_logic_vector(23 downto 0);
 		SNES_DO		: out std_logic_vector(7 downto 0);
 		SNES_DI		: in std_logic_vector(7 downto 0);
@@ -51,6 +61,7 @@ end SA1;
 architecture rtl of SA1 is
 
 signal CLK_CE					: std_logic;
+signal PAUSE_HOLD				: std_logic;
 signal EN						: std_logic;
 signal WINDOW					: std_logic;
 signal DOT_CLK					: std_logic; 
@@ -275,13 +286,20 @@ begin
 	if RST_N = '0' then
 		CLK_CE <= '0';
 		SNES_SYSCLK <= '0';
+		PAUSE_HOLD <= '0';
 	elsif rising_edge(CLK) then
 		if ENABLE = '1' then
-			CLK_CE <= not CLK_CE;
+			if PAUSE = '1' then
+				PAUSE_HOLD <= '1';
+			end if;
+			CLK_CE <= not CLK_CE and not (PAUSE or PAUSE_HOLD);
 			if SYSCLKF_CE = '1' then
 				CLK_CE <= '0';
 				WINDOW <= '1';
 				SNES_SYSCLK <= '0';
+				if PAUSE = '0' then
+					PAUSE_HOLD <= '0';
+				end if;
 			elsif SYSCLKR_CE = '1' then
 				SNES_SYSCLK <= '1';
 				INT_SNES_A <= SNES_A;
@@ -797,7 +815,16 @@ begin
 						DDA(17 downto 16) <= SNES_DI(1 downto 0);
 					when others => null;
 				end case;
-			elsif SNES_CCDMA_IRAM_ACCESS = '1' and CC1_SNES_BWRAM_MASK = "000000" and SS_BUSY = '0' then
+			-- The freeze contract (PAUSE) must also hold this trigger: it is
+			-- a level decode of the S-CPU address bus, and a console frozen
+			-- on a CC1 tile boundary would otherwise re-arm DMA_RUN and push
+			-- stray conversion writes into IRAM on every raw clock of the
+			-- pause, while the EN-gated DMA sequencer cannot consume them.
+			-- The gate mirrors the CLK_CE park condition (PAUSE or
+			-- PAUSE_HOLD): the trigger may only act once the CE chain is
+			-- free-running again (first SYSCLKF_CE), which is also the first
+			-- point the parked S-CPU access can complete.
+			elsif SNES_CCDMA_IRAM_ACCESS = '1' and CC1_SNES_BWRAM_MASK = "000000" and SS_BUSY = '0' and PAUSE = '0' and PAUSE_HOLD = '0' then
 				DMA_RUN <= CC1DMA_SEL;
 			end if;
 		end if;
