@@ -1,0 +1,50 @@
+diff --git a/rtl/chip/GSU/GSU.vhd b/rtl/chip/GSU/GSU.vhd
+index 4723587..2c986a3 100644
+--- a/rtl/chip/GSU/GSU.vhd
++++ b/rtl/chip/GSU/GSU.vhd
+@@ -226,7 +226,7 @@ architecture rtl of GSU is
+ 	
+ 	signal GO_CNT 				: unsigned(15 downto 0);
+ 
+-	signal SS_BUSY_SR			: std_logic_vector(1 downto 0);
++	signal SS_BUSY_SR			: std_logic_vector(7 downto 0);
+ 	signal SS_MEM_BUSY			: std_logic;
+ 	signal SS_RAM_LOAD_WORD		: std_logic;
+ 	signal SS_RAM_STORE_WORD	: std_logic;
+@@ -460,24 +460,33 @@ begin
+ 	-- Save state: Allow GSU MEM access a few cycles after stopping CLK_CE and before starting CLK_CE.
+ 	SS_MEM_BUSY <= SS_BUSY and SS_BUSY_SR(1);
+ 
++	-- The SR length sets the release settle: CLK_CE stays parked that many
++	-- SYSCLKF_CE ticks after SS_BUSY falls. It must outlast the re-read of a
++	-- ROM word the GSU had in flight when it was frozen: the ROM_RD_N pulser
++	-- below only re-issues that read once SS_MEM_BUSY falls, and the data
++	-- takes several hundred ns to land (worse when the SDRAM port was
++	-- borrowed for the state blob and has just been handed back). One tick
++	-- can also be lost as a phantom: if the console clock enables were frozen
++	-- with SYSCLKF_CE high, the first raw clock after release shifts once
++	-- before real bus cycles resume. 8 ticks leave ample margin for both.
+ 	process(CLK, RST_N)
+ 	begin
+ 		if RST_N = '0' then
+ 			CLK_CE <= '0';
+ 		elsif rising_edge(CLK) then
+ 			if ENABLE = '1' then
+-				if SS_BUSY = '1' or SS_BUSY_SR /= "00" then
++				if SS_BUSY = '1' or SS_BUSY_SR /= x"00" then
+ 					CLK_CE <= '0';
+ 				else
+ 					CLK_CE <= not CLK_CE or SPEED or TURBO;
+ 				end if;
+ 
+ 				if SYSCLKF_CE = '1' then
+-					SS_BUSY_SR <= SS_BUSY_SR(0) & SS_BUSY;
++					SS_BUSY_SR <= SS_BUSY_SR(6 downto 0) & SS_BUSY;
+ 				end if;
+ 			end if;
+ 		end if;
+-	end process; 
++	end process;
+ 		
+ 	process(CLK)
+ 	begin

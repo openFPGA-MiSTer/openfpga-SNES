@@ -1,0 +1,67 @@
+name: Sync Upstream (MiSTer)
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "unstable (MiSTer HEAD) or stable (release commit)"
+        type: choice
+        options: [unstable, stable]
+        default: unstable
+      ref:
+        description: "Source ref/commit override (stable channel passes the release commit)"
+        type: string
+        required: false
+        default: ""
+  # The hub (Forks_openFPGA) also dispatches this via the GitHub API.
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CUSTOM_GH_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          echo "https://user:${{ secrets.CUSTOM_GH_TOKEN }}@github.com" > "$HOME/.git-credentials"
+          git config --global credential.helper store
+
+      - name: Copybara sync
+        id: copybara
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set +e
+          # Copybara pushes straight to the fork branch (git.destination), no PR.
+          # ubuntu-latest ships podman; use it per project policy (no docker).
+          podman run --rm \
+            -v "$(pwd)":/usr/src/app:Z \
+            -v "$HOME/.gitconfig":/root/.gitconfig:Z \
+            -v "$HOME/.git-credentials":/root/.git-credentials:Z \
+            ghcr.io/anipos/copybara-docker-image \
+            --ignore-noop --init-history \
+            migrate /usr/src/app/.github/copy.bara.sky "${CHANNEL}" ${REF:+"${REF}"}
+          EXIT_CODE=$?
+          set -e
+          # Copybara exit 4 = "no changes to import" -> success no-op.
+          if [ "$EXIT_CODE" -eq 4 ]; then
+            echo "No upstream changes."
+            exit 0
+          fi
+          exit "$EXIT_CODE"
+
+      - name: Notify failure (Telegram)
+        if: failure() && steps.copybara.outcome == 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          bash .github/notify_error.sh "UPSTREAM ${{ inputs.channel }} copybara sync failed"

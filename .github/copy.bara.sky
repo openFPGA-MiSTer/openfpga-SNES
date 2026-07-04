@@ -1,0 +1,86 @@
+# Copybara config for openfpga-SNES: keep the vendored MiSTer SNES core in rtl/
+# updated to MiSTer-devel/SNES_MiSTer.
+#
+# Unlike NES (whose MiSTer sources are already LF and land 1:1 in rtl/upstream/),
+# the SNES MiSTer sources are CRLF while the fork keeps rtl/ as LF, and the fork
+# owns several files that must never be overwritten from upstream. So this config:
+#   1. strips CR so synced files match the fork's LF (core.replace on \r),
+#   2. keeps rtl/** in place (no move; VENDOR_PATH = rtl),
+#   3. reapplies the fork's local deltas as patches (see upstream_patches/),
+#   4. excludes fork-owned / dropped files from the destination so they survive.
+#
+# Two workflows: "unstable" (MiSTer master HEAD) and "stable" (a release commit
+# passed by the hub via --last-rev / ref override at dispatch time).
+
+upstream_url = "https://github.com/MiSTer-devel/SNES_MiSTer.git"
+downstream_url = "https://github.com/openFPGA-MiSTer/openfpga-SNES.git"
+
+# Fork-owned or dropped files: present in MiSTer rtl/ but NOT tracked from upstream.
+# Copybara will neither overwrite nor delete these on the destination.
+fork_owned = [
+    "rtl/sdram.sv",        # Pocket SDRAM controller (full rewrite)
+    "rtl/ioport.sv",       # Pocket I/O adaptation
+    "rtl/lightgun.sv",     # Pocket lightgun adaptation
+    "rtl/snes.qip",        # fork's own file list (MiSTer uses files.qip)
+    "rtl/mister_top/**",   # Pocket top wrapper (adapted SNES.sv, boot1, rom_parser, ...)
+    # MiSTer files intentionally dropped by the fork (never re-introduce):
+    "rtl/ddram.sv",
+    "rtl/hps_ext.v",
+    "rtl/miracle.sv",
+    "rtl/savestate_ui.sv",
+    "rtl/sni.sv",
+    "rtl/uart.sv",
+    "rtl/pll.v",
+    "rtl/pll.qip",
+    "rtl/pll/**",
+    "rtl/sdr.xlsx",        # MiSTer design spreadsheet, not RTL; dropped by the fork
+]
+
+patches = [
+    "upstream_patches/main.v.patch",          # USE_* parameterization for per-bitstream config
+    "upstream_patches/CPU.vhd.patch",         # savestate hooks
+    "upstream_patches/SNES.vhd.patch",        # savestate hooks
+    "upstream_patches/chip_GSU_GSU.vhd.patch",   # GSU savestate
+    "upstream_patches/chip_SA1_SA1.vhd.patch",   # SA-1 savestate
+    "upstream_patches/chip_SA1_SA1Map.vhd.patch",
+    "upstream_patches/savestates.sv.patch",   # savestate engine deltas
+]
+
+def snes_workflow(name, ref):
+    core.workflow(
+        name = name,
+        origin = git.origin(url = upstream_url, ref = ref),
+        # Push straight to the fork branch, no PR (matches MiSTer-DB9):
+        # stable tracks releases on master, unstable is the HEAD canary branch.
+        destination = git.destination(
+            url = downstream_url,
+            push = "master" if name == "stable" else "unstable",
+            fetch = "master" if name == "stable" else "unstable",
+        ),
+        mode = "SQUASH",
+        authoring = authoring.pass_thru("Copybara <copybara@openfpga-mister>"),
+
+        # Vendor the MiSTer rtl/ tree, minus fork-owned/dropped files. Excluding
+        # from origin_files stops Copybara from writing them; excluding the same
+        # set from destination_files stops it from deleting the fork's versions.
+        origin_files = glob(["rtl/**"], exclude = fork_owned),
+        destination_files = glob(["rtl/**"], exclude = fork_owned),
+
+        transformations = [
+            # Normalize CRLF -> LF so synced files match the fork and patches apply.
+            core.replace(
+                before = "${cr}",
+                after = "",
+                regex_groups = {"cr": "\r"},
+                multiline = True,
+            ),
+            # Reapply the fork's local deltas on top of upstream.
+            patch.apply(patches = patches),
+            metadata.add_header("[UPSTREAM] ", ignore_label_not_found = True, new_line = False),
+        ],
+    )
+
+snes_workflow("unstable", "master")
+# The hub dispatches the stable channel with an explicit release commit; "master"
+# here is only a fallback when run manually without a ref override.
+snes_workflow("stable", "master")
